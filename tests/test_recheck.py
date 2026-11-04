@@ -156,6 +156,42 @@ def test_fetch_comment_pages_quota_and_disabled(monkeypatch):
     assert rc.fetch_comment_pages(sc, "v", "o", 1) == {"owner": [], "other": [], "disabled": True}
 
 
+def test_fetch_comment_pages_network_error_retries_then_skips(monkeypatch):
+    import requests
+    monkeypatch.setattr(rc.time, "sleep", lambda s: None)
+    calls = []
+
+    def flaky(endpoint, **p):
+        calls.append(1)
+        raise requests.ReadTimeout("timed out")
+    monkeypatch.setattr(sc, "yt", flaky)
+    assert rc.fetch_comment_pages(sc, "v", "o", 1) is None and len(calls) == 3  # 3번 시도 후 건너뜀(미수집으로 남김)
+    n = {"i": 0}
+
+    def once(endpoint, **p):
+        n["i"] += 1
+        if n["i"] == 1:
+            raise requests.ReadTimeout("x")
+        return {"items": []}
+    monkeypatch.setattr(sc, "yt", once)
+    assert rc.fetch_comment_pages(sc, "v", "o", 1) == {"owner": [], "other": []}
+
+
+def test_comments_step_survives_network_errors_and_keeps_others(ws, monkeypatch):
+    import requests
+    monkeypatch.setattr(rc.time, "sleep", lambda s: None)
+
+    def yt(endpoint, **p):
+        if p["videoId"] == "a2":
+            raise requests.ConnectionError("down")
+        return {"items": []}
+    monkeypatch.setattr(sc, "yt", yt)
+    changed = rc.step_comments(sc, args(), CFG, rc.unconfirmed(sc, CFG))
+    v = sc.jload(sc.WORK / "videos.json", {})
+    assert v["1"]["videos"][1].get("comments") is None          # 실패한 영상은 미수집으로 남아 다음에 다시 받음
+    assert v["2"]["videos"][1]["comments"] == {"owner": [], "other": []} and "2" in changed
+
+
 def test_comment_targets_prefers_outfit_titles_and_respects_quota(ws):
     videos = sc.jload(sc.WORK / "videos.json", {})
     pick, total = rc.comment_targets(sc, CFG, {"1": {}, "2": {}}, videos, 1)

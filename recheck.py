@@ -214,6 +214,17 @@ def step_links(sc, cfg, targets, max_links, cache):
 
 
 # ───────────────────────── 댓글 재검토 ─────────────────────────
+def yt_retry(sc, endpoint, params, tries=3):
+    """네트워크 오류(시간 초과 등)는 잠깐 쉬고 다시 시도. API가 거절한 오류(RuntimeError)는 그대로 올린다"""
+    for i in range(tries):
+        try:
+            return sc.yt(endpoint, **params)
+        except requests.RequestException:
+            if i == tries - 1:
+                raise
+            time.sleep(1.5 * (i + 1))
+
+
 def fetch_comment_pages(sc, video_id, owner_id, pages):
     """주인 댓글·답글과 시청자 댓글을 pages 페이지까지 받는다. 쿼터 초과면 None"""
     owner, other, token = [], [], None
@@ -222,7 +233,9 @@ def fetch_comment_pages(sc, video_id, owner_id, pages):
         if token:
             params["pageToken"] = token
         try:
-            j = sc.yt("commentThreads", **params)
+            j = yt_retry(sc, "commentThreads", params)
+        except requests.RequestException:  # 연결 실패·시간 초과: 이 영상은 건너뛰고(댓글 미수집으로 남김) 다음 실행에서 다시 받는다
+            return None
         except RuntimeError as e:
             if "quota" in str(e).lower():
                 sc.QUOTA["out"] = True
@@ -270,12 +283,21 @@ def step_comments(sc, args, cfg, targets):
         key, vid = item
         return item, fetch_comment_pages(sc, vid, videos[key]["channel"]["channel_id"], args.comment_pages)
 
+    done = skipped = 0
     with ThreadPoolExecutor(max_workers=6) as ex:
         for (key, vid), res in ex.map(work, pick):
             if res is not None:
                 by_id[(key, vid)]["comments"] = res
                 changed.add(key)
+            else:
+                skipped += 1
+            done += 1
+            if done % 200 == 0:  # 중간에 멈춰도 받은 댓글은 남도록 주기적으로 저장
+                sc.jdump(videos, sc.WORK / "videos.json")
+                print(f"  … {done}/{len(pick)}")
     sc.jdump(videos, sc.WORK / "videos.json")
+    if skipped and not sc.QUOTA["out"]:
+        print(f"  ⚠ 네트워크 오류로 {skipped}개 영상은 건너뛰었습니다. 같은 명령을 다시 실행하면 그 영상만 이어서 받습니다.")
     if sc.QUOTA["out"]:
         print("  ⚠ YouTube API 일일 쿼터를 다 써서 일부 댓글을 못 가져왔습니다. 내일 같은 명령을 다시 실행하면 이어서 받습니다.")
     return changed
