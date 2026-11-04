@@ -7,7 +7,7 @@ import pytest
 import recheck as rc
 import seeding_checker as sc
 
-CFG = {"brand_keywords": ["랑가주망", "lengagement"], "product_keywords": ["풋볼져지"], "window_days": 180, "visual_window_days": 60,
+CFG = {"brand_keywords": ["하늘마루", "zenfield"], "product_keywords": ["풋볼져지"], "window_days": 180, "visual_window_days": 60,
        "max_duration_min": 20, "outfit_title_keywords": ["코디"], "provider": "openai", "model": "m", "reference_images": {},
        "default_since": "2026-05-13T00:00:00+09:00"}
 
@@ -29,11 +29,11 @@ def ws(tmp_path, monkeypatch):
               "items": [{"name": "예시 상품 [블랙]", "option": ""}], "couple": False, "memo": ""} for n in (1, 2, 3)]
     vids = {
         "1": {"channel": {"channel_id": "UC1", "title": "채널1"}, "error": None, "since_assumed": False,
-              "videos": [video("a1", desc="협찬 랑가쥬만 제품입니다", comments={"owner": [], "other": []}), video("a2")]},
+              "videos": [video("a1", desc="협찬 하늘마류 제품입니다", comments={"owner": [], "other": []}), video("a2")]},
         "2": {"channel": {"channel_id": "UC2", "title": "채널2"}, "error": None, "since_assumed": False,
               "videos": [video("b1", comments={"owner": [], "other": []}), video("b2", title="오늘의 코디")]},
         "3": {"channel": {"channel_id": "UC3", "title": "채널3"}, "error": None, "since_assumed": False,
-              "videos": [video("c1", desc="랑가주망 협찬", comments={"owner": [], "other": []})]},
+              "videos": [video("c1", desc="하늘마루 협찬", comments={"owner": [], "other": []})]},
     }
     sc.jdump(chans, sc.WORK / "channels.json")
     sc.jdump(vids, sc.WORK / "videos.json")
@@ -50,16 +50,17 @@ def args(**kw):
 
 # ───── 퍼지 매칭
 def test_fuzzy_korean_variants():
-    assert "랑가쥬망" in rc.fuzzy_find(sc, "이 옷은 랑가쥬망 거예요", "랑가주망")
-    assert "랑가주만" in rc.fuzzy_find(sc, "랑가 주만 협찬", "랑가주망")  # 공백이 있어도
-    assert rc.fuzzy_find(sc, "오늘 점심은 김치찌개", "랑가주망") == []
-    assert rc.fuzzy_find(sc, "랑가주망", "랑가주망") == []  # 정확한 표기는 대상이 아님
+    assert "하늘마류" in rc.fuzzy_find(sc, "이 옷은 하늘마류 거예요", "하늘마루")
+    assert "하늘마룽" in rc.fuzzy_find(sc, "하늘 마룽 협찬", "하늘마루")  # 공백이 있어도
+    assert rc.fuzzy_find(sc, "오늘 점심은 김치찌개", "하늘마루") == []
+    assert rc.fuzzy_find(sc, "하늘마루", "하늘마루") == []  # 정확한 표기는 대상이 아님
 
 
 def test_fuzzy_english_uses_word_boundary_and_first_letter():
-    assert rc.fuzzy_find(sc, "social engagement rate", "lengagement") == []   # 흔한 단어는 제외
-    assert "lengagment" in rc.fuzzy_find(sc, "wearing lengagment today", "lengagement")
-    assert rc.fuzzy_find(sc, "lengagement", "lengagement") == []
+    assert rc.fuzzy_find(sc, "zen field notes", "zenfield") == []   # 띄어 쓴 다른 단어는 제외
+    assert rc.fuzzy_find(sc, "enfield", "zenfield") == []             # 첫 글자가 다르면 제외
+    assert "zenfeld" in rc.fuzzy_find(sc, "wearing zenfeld today", "zenfield")
+    assert rc.fuzzy_find(sc, "zenfield", "zenfield") == []
 
 
 def test_dist_le():
@@ -76,12 +77,12 @@ def test_extract_links_skips_social_and_maps():
 def test_step_links_finds_brand_in_final_page(ws, monkeypatch):
     videos = sc.jload(sc.WORK / "videos.json", {})
     videos["2"]["videos"][0]["description"] = "구매 https://bit.ly/aaa 그리고 https://example.com/zzz"
-    pages = {"https://bit.ly/aaa": ("https://shop.test/p?brand=x", "<title>랑가주망 반팔</title>"),
+    pages = {"https://bit.ly/aaa": ("https://shop.test/p?brand=x", "<title>하늘마루 반팔</title>"),
              "https://example.com/zzz": ("https://example.com/zzz", "nothing")}
     monkeypatch.setattr(rc, "resolve_link", lambda u: pages[u])
     cache = {}
     found, total, n = rc.step_links(sc, CFG, {"2": videos["2"]}, 10, cache)
-    assert found == {"2": {"b1": ["랑가주망"]}} and total == 2 and n == 2
+    assert found == {"2": {"b1": ["하늘마루"]}} and total == 2 and n == 2
     assert cache["https://bit.ly/aaa"]["final"].startswith("https://shop.test")
     found2, _, n2 = rc.step_links(sc, CFG, {"2": videos["2"]}, 10, cache)  # 캐시: 다시 따라가지 않는다
     assert n2 == 0 and found2 == found
@@ -108,13 +109,13 @@ def entry_with(**sig):
 
 
 def test_decide_new_signals_become_suspect_in_order():
-    assert sc.decide(entry_with(link_hits=["랑가주망"]), {})["status"] == "의심(수동확인)"
-    assert sc.decide(entry_with(fuzzy_hits=["랑가주망≈랑가쥬만"]), {})["basis"].startswith("표기 변형")
+    assert sc.decide(entry_with(link_hits=["하늘마루"]), {})["status"] == "의심(수동확인)"
+    assert sc.decide(entry_with(fuzzy_hits=["하늘마루≈하늘마류"]), {})["basis"].startswith("표기 변형")
     assert sc.decide(entry_with(seen_hits=["풋볼져지"]), {})["basis"].startswith("분석 서술")
-    both = sc.decide(entry_with(link_hits=["랑가주망"], seen_hits=["풋볼져지"], product_hits=["풋볼져지"]), {})
+    both = sc.decide(entry_with(link_hits=["하늘마루"], seen_hits=["풋볼져지"], product_hits=["풋볼져지"]), {})
     assert both["basis"].startswith("링크")
     assert sc.decide(entry_with(), {})["status"] == "미확인"
-    assert sc.decide(entry_with(brand_hits=["랑가주망"], link_hits=["랑가주망"]), {})["status"] == "확인됨(텍스트)"  # 정확한 표기가 우선
+    assert sc.decide(entry_with(brand_hits=["하늘마루"], link_hits=["하늘마루"]), {})["status"] == "확인됨(텍스트)"  # 정확한 표기가 우선
 
 
 def test_decide_old_entries_without_new_keys_still_work():
@@ -125,10 +126,10 @@ def test_decide_old_entries_without_new_keys_still_work():
 
 
 def test_screen_attaches_recheck_json(ws):
-    sc.jdump({"2": {"b1": {"link": ["랑가주망"], "fuzzy": [], "seen": []}}}, sc.WORK / "recheck.json")
+    sc.jdump({"2": {"b1": {"link": ["하늘마루"], "fuzzy": [], "seen": []}}}, sc.WORK / "recheck.json")
     sc.cmd_screen(Namespace(only=None, transcripts=False), CFG)
     e = sc.jload(sc.WORK / "screen.json", {})["2"]
-    assert e["videos"][0]["signals"]["link_hits"] == ["랑가주망"]
+    assert e["videos"][0]["signals"]["link_hits"] == ["하늘마루"]
     assert sc.decide(e, {})["status"] == "의심(수동확인)"
 
 
@@ -140,11 +141,11 @@ def test_fetch_comment_pages_paginates_and_splits_owner(monkeypatch):
         calls.append(p.get("pageToken"))
         mk = lambda a, t: {"snippet": {"topLevelComment": {"snippet": {"authorChannelId": {"value": a}, "textOriginal": t}}}}  # noqa: E731
         if p.get("pageToken") is None:
-            return {"items": [mk("OWN", "랑가주망 협찬"), mk("X", "어디꺼예요")], "nextPageToken": "T2"}
+            return {"items": [mk("OWN", "하늘마루 협찬"), mk("X", "어디꺼예요")], "nextPageToken": "T2"}
         return {"items": [mk("Y", "예뻐요")]}
     monkeypatch.setattr(sc, "yt", fake_yt)
     r = rc.fetch_comment_pages(sc, "vid", "OWN", 3)
-    assert r["owner"] == ["랑가주망 협찬"] and r["other"] == ["어디꺼예요", "예뻐요"] and calls == [None, "T2"]
+    assert r["owner"] == ["하늘마루 협찬"] and r["other"] == ["어디꺼예요", "예뻐요"] and calls == [None, "T2"]
 
 
 def test_fetch_comment_pages_quota_and_disabled(monkeypatch):
@@ -250,9 +251,9 @@ def test_recheck_requires_keys_and_rejects_bad_steps(ws, monkeypatch):
 def test_recheck_comments_step_updates_videos_and_signals(ws, monkeypatch):
     monkeypatch.setenv("YOUTUBE_API_KEY", "k" * 30)
     monkeypatch.setattr(sc, "yt", lambda endpoint, **p: {"items": [{"snippet": {"topLevelComment": {"snippet": {
-        "authorChannelId": {"value": "UC2"}, "textOriginal": "랑가주망 협찬이에요"}}}}]})
+        "authorChannelId": {"value": "UC2"}, "textOriginal": "하늘마루 협찬이에요"}}}}]})
     rc.cmd_recheck(sc, args(steps="comments"), CFG)
     assert rc.all_statuses(sc, CFG)["2"] == "확인됨(댓글)"
     videos = sc.jload(sc.WORK / "videos.json", {})
-    assert videos["2"]["videos"][1]["comments"]["owner"] == ["랑가주망 협찬이에요"]
+    assert videos["2"]["videos"][1]["comments"]["owner"] == ["하늘마루 협찬이에요"]
     assert os.path.exists("output")
