@@ -360,6 +360,7 @@ def cmd_screen(args, cfg):
     langs = cfg.get("transcript_langs", ["ko", "en"])
     max_tr = cfg.get("transcript_max_min", 20) * 60
     tr_win = cfg.get("transcript_window_days", cfg.get("visual_window_days", 45))  # 자막은 발송 직후 영상만 (요청 수 절약)
+    extra = jload(WORK / "recheck.json", {})  # recheck 명령이 찾은 단서(링크·표기 변형·분석 서술): 영상별로 붙인다
     rows = []
     for key, entry in data.items():
         selected = not args.only or int(key) in parse_only(args.only)
@@ -378,6 +379,8 @@ def cmd_screen(args, cfg):
             sig["comment_hits"] = find_hits(owner_text, brand)            # 채널 주인의 댓글·답글에 브랜드 언급 (강한 근거)
             sig["comment_other_hits"] = find_hits(other_text, brand)      # 시청자 댓글에 브랜드 언급 (약한 근거)
             sig["product_hits"] = sorted(set(sig["product_hits"]) | set(find_hits(owner_text, prod)))
+            xv = (extra.get(key) or {}).get(v["id"], {})
+            sig["link_hits"], sig["fuzzy_hits"], sig["seen_hits"] = xv.get("link", []), xv.get("fuzzy", []), xv.get("seen", [])
             in_win = not tr_win or parse_iso(v["published"]) <= since + timedelta(days=tr_win)
             if args.transcripts and selected and in_win and not sig["brand_hits"] and v["duration"] <= max_tr:
                 tr = get_transcript(v["id"], langs)
@@ -462,7 +465,7 @@ def decide(entry, vis):
     vids = entry["videos"]
     for v in vids:
         v.setdefault("signals", {"brand_hits": [], "product_hits": [], "disclosure": [], "transcript_hits": [],
-                                 "comment_hits": [], "comment_other_hits": []})
+                                 "comment_hits": [], "comment_other_hits": [], "link_hits": [], "fuzzy_hits": [], "seen_hits": []})
     if not vids:
         return {"status": "업로드 없음", "basis": "", "video": None, "note": "발송일 이후 영상 없음"}
     for v in vids:
@@ -489,9 +492,21 @@ def decide(entry, vis):
         if v["signals"].get("comment_other_hits"):
             return {"status": "의심(수동확인)", "basis": "댓글: " + "/".join(v["signals"]["comment_other_hits"]), "video": v,
                     "note": "시청자 댓글에 브랜드 언급 (영상에 실제로 나오는지 확인)"}
+    for v in vids:  # 2차 재검증(recheck)이 찾은 간접 단서: 링크 -> 표기 변형. 확정이 아니라 사람이 확인할 후보
+        if v["signals"].get("link_hits"):
+            return {"status": "의심(수동확인)", "basis": "링크: " + "/".join(v["signals"]["link_hits"]), "video": v,
+                    "note": "설명란 링크의 최종 주소·페이지에 브랜드 언급 (영상에 실제로 나오는지 확인)"}
+    for v in vids:
+        if v["signals"].get("fuzzy_hits"):
+            return {"status": "의심(수동확인)", "basis": "표기 변형: " + "/".join(v["signals"]["fuzzy_hits"]), "video": v,
+                    "note": "브랜드명과 비슷한 표기가 있음 (오타·변형인지 확인)"}
     for v in vids:
         if v["signals"]["product_hits"]:
             return {"status": "의심(수동확인)", "basis": "/".join(v["signals"]["product_hits"]), "video": v, "note": "상품 키워드만 언급(브랜드명 없음)"}
+    for v in vids:
+        if v["signals"].get("seen_hits"):
+            return {"status": "의심(수동확인)", "basis": "분석 서술: " + "/".join(v["signals"]["seen_hits"]), "video": v,
+                    "note": "영상 분석 때 모델이 적은 '본 착장'에 상품·브랜드 단어가 있음 (확인 필요)"}
     note = "영상 분석했으나 확신 낮음" if best else "텍스트 단서 없음" + ("" if vis else " (영상 분석 전)")
     return {"status": "미확인", "basis": "", "video": None, "note": note}
 
@@ -1221,17 +1236,25 @@ def need_keys(order, cfg):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=["parse", "collect", "screen", "watch", "validate", "report", "check", "all"])
+    ap.add_argument("cmd", choices=["parse", "collect", "screen", "watch", "validate", "report", "check", "recheck", "all"])
     ap.add_argument("--xlsx", default="통합_문서1.xlsx", help="시딩 리스트 엑셀 경로")
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--only", help="특정 번호만 처리 (예: 1,5,12 또는 범위 1-20,25) — 테스트·나눠 실행용")
     ap.add_argument("--transcripts", action="store_true", help="자막에서도 브랜드 언급 검색(느림)")
     ap.add_argument("--limit", type=int, default=10, help="validate 에서 검증할 영상 최대 개수")
     ap.add_argument("--skip-watch", action="store_true", help="all 실행 시 영상 분석 단계 건너뛰기")
+    ap.add_argument("--dry-run", action="store_true", help="recheck: 아무것도 호출·저장하지 않고 대상 수와 예상 비용만 출력")
+    ap.add_argument("--budget", type=float, help="recheck: 안 본 영상 재분석 비용 상한(USD). 없으면 영상 분석은 하지 않음")
+    ap.add_argument("--steps", default="comments,fuzzy,links,seen,watch", help="recheck: 실행할 점검(쉼표로 구분)")
+    ap.add_argument("--comment-quota", type=int, default=3000, help="recheck: 댓글 재검토에 쓸 YouTube 쿼터 상한")
+    ap.add_argument("--comment-pages", type=int, default=1, help="recheck: 영상당 댓글 페이지 수(페이지당 쿼터 1)")
+    ap.add_argument("--max-links", type=int, default=300, help="recheck: 따라가 볼 설명란 링크 최대 개수")
     args = ap.parse_args()
     load_env()
     cfg = load_cfg(args.config)
-    steps = {"parse": cmd_parse, "collect": cmd_collect, "screen": cmd_screen, "watch": cmd_watch, "validate": cmd_validate, "report": cmd_report, "check": cmd_check}
+    from recheck import cmd_recheck
+    steps = {"parse": cmd_parse, "collect": cmd_collect, "screen": cmd_screen, "watch": cmd_watch, "validate": cmd_validate, "report": cmd_report, "check": cmd_check,
+             "recheck": lambda a, c: cmd_recheck(sys.modules[__name__], a, c)}
     order = ["parse", "collect", "screen"] + ([] if args.skip_watch else ["watch"]) + ["report"] if args.cmd == "all" else [args.cmd]
     need_keys(order, cfg)
     for name in order:
